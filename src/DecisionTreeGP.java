@@ -1,155 +1,197 @@
-
 package src;
 
+import java.util.*;
+
 public class DecisionTreeGP {
+    private Random random;
+    private long seed;
+    private Node bestTree;
+    private Dataset trainData;
+    private Dataset testData;
     private long runtime;
+    private double trainAcc;
     private double testAcc;
     private double fmeasure;
     
-    public DecisionTreeGP(long seed) { }
+    private List<GPIndividual> population;
     
-    public void train(String trainFile, String testFile) throws Exception {
-        runtime = 1000;
-        testAcc = 0.75;
-        fmeasure = 0.74;
+    private int populationSize = 200;
+    private int maxGenerations = 100;
+    private int maxTreeDepth = 5;
+    private int initialMaxDepth = 3;
+    private double crossoverRate = 0.85;
+    private double mutationRate = 0.15;
+    private double elitismRate = 0.05;
+    private int tournamentSize = 5;
+    private int numFeatures = 9;
+    
+    public DecisionTreeGP(long seed) {
+        this.seed = seed;
+        this.random = new Random(seed);
+        this.population = new ArrayList<>();
     }
     
-    public double getTrainingAccuracy() { return 0.76; }
+    public void train(String trainFile, String testFile) throws Exception {
+        long startTime = System.currentTimeMillis();
+        
+        trainData = new Dataset();
+        testData = new Dataset();
+        trainData.load(trainFile);
+        testData.load(testFile);
+        
+        initializePopulation();
+        
+        for (int generation = 0; generation < maxGenerations; generation++) {
+            evaluatePopulation();
+            Collections.sort(population);
+            
+            GPIndividual currentBest = population.get(0);
+            if (bestTree == null || currentBest.fitness > getFitness(bestTree, trainData)) {
+                bestTree = copyTree(currentBest.root);
+            }
+            
+            List<GPIndividual> newPopulation = new ArrayList<>();
+            
+            int eliteCount = (int)(populationSize * elitismRate);
+            for (int i = 0; i < eliteCount && i < population.size(); i++) {
+                newPopulation.add(new GPIndividual(copyTree(population.get(i).root)));
+            }
+            
+            while (newPopulation.size() < populationSize) {
+                GPIndividual parent1 = tournamentSelect();
+                GPIndividual parent2 = tournamentSelect();
+                
+                GPIndividual offspring;
+                if (random.nextDouble() < crossoverRate) {
+                    offspring = crossover(parent1, parent2);
+                } else {
+                    offspring = new GPIndividual(copyTree(parent1.root));
+                }
+                
+                mutate(offspring);
+                newPopulation.add(offspring);
+            }
+            
+            population = newPopulation;
+        }
+        
+        trainAcc = evaluateAccuracy(bestTree, trainData);
+        testAcc = evaluateAccuracy(bestTree, testData);
+        fmeasure = evaluateFMeasure(bestTree, testData);
+        
+        runtime = System.currentTimeMillis() - startTime;
+    }
+    
+    public double getTrainingAccuracy() { return trainAcc; }
     public double getTestAccuracy() { return testAcc; }
     public double getFMeasure() { return fmeasure; }
     public long getRuntime() { return runtime; }
-}
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
-
-class Node {
-    boolean isLeaf;
-    int classLabel;
-    int featureIndex;
-    double threshold;
-    Node left;
-    Node right;
-
-    Node(int classLabel) {
-        this.isLeaf = true;
-        this.classLabel = classLabel;
+    
+    private void initializePopulation() {
+        population.clear();
+        int depthRange = initialMaxDepth - 1;
+        
+        for (int i = 0; i < populationSize; i++) {
+            int depth = 2 + (i % depthRange);
+            String method = (i % 2 == 0) ? "full" : "grow";
+            Node tree = generateTree(0, depth, method);
+            population.add(new GPIndividual(tree));
+        }
     }
-
-    Node(int featureIndex, double threshold) {
-        this.isLeaf = false;
-        this.featureIndex = featureIndex;
-        this.threshold = threshold;
-    }
-}
-
-public class DecisionTreeGP {
-
-    private GPParameters params;
-    private Dataset dataset;
-    private List<GPIndividual> population;
-    private Random random;
-    private int numFeatures;
-
-    public DecisionTreeGP(GPParameters params, Dataset dataset) {
-        this.params = params;
-        this.dataset = dataset;
-        this.random = new Random(params.seed);
-        this.population = new ArrayList<>();
-        this.numFeatures = dataset.getTrainingData()[0].length - 1;
-    }
-
+    
     private Node generateTree(int currentDepth, int maxDepth, String method) {
         boolean makeLeaf;
-
+        
         if (currentDepth >= maxDepth) {
             makeLeaf = true;
         } else if (method.equals("full")) {
             makeLeaf = false;
         } else {
-            makeLeaf = random.nextBoolean();
+            makeLeaf = random.nextDouble() < 0.4;
         }
-
+        
         if (makeLeaf) {
             return new Node(random.nextInt(2));
         } else {
             int featureIndex = random.nextInt(numFeatures);
-            double threshold = random.nextDouble() * 5;
+            double threshold = getRandomThresholdForFeature(featureIndex);
             Node node = new Node(featureIndex, threshold);
             node.left = generateTree(currentDepth + 1, maxDepth, method);
             node.right = generateTree(currentDepth + 1, maxDepth, method);
             return node;
         }
     }
-
-    private void initialisePopulation() {
-        int maxDepth = params.initialMaxDepth;
-        int depthRange = maxDepth - 1;
-
-        for (int i = 0; i < params.populationSize; i++) {
-            int depth = 2 + (i % depthRange);
-            String method = (i % 2 == 0) ? "full" : "grow";
-            Node root = generateTree(0, depth, method);
-            population.add(new GPIndividual(root));
+    
+    private double getRandomThresholdForFeature(int featureIndex) {
+        double[][] ranges = {
+            {0, 5}, {0, 2}, {0, 10}, {0, 30}, {0, 2}, {0, 3}, {0, 1}, {0, 5}, {0, 1}
+        };
+        
+        if (featureIndex < ranges.length) {
+            return ranges[featureIndex][0] + random.nextDouble() * (ranges[featureIndex][1] - ranges[featureIndex][0]);
         }
+        return random.nextDouble() * 5.0;
     }
-
-    private int classifyInstance(Node node, double[] instance) {
+    
+    private int classifyInstance(Node node, double[] features) {
         if (node.isLeaf) {
             return node.classLabel;
         }
-        if (instance[node.featureIndex] < node.threshold) {
-            return classifyInstance(node.left, instance);
+        if (features[node.featureIndex] <= node.threshold) {
+            return classifyInstance(node.left, features);
         } else {
-            return classifyInstance(node.right, instance);
+            return classifyInstance(node.right, features);
         }
     }
-
-    private void evaluate(GPIndividual individual) {
-        double[][] trainingData = dataset.getTrainingData();
-        int correct = 0;
-
-        for (double[] instance : trainingData) {
-            int actualClass = (int) instance[instance.length - 1];
-            double[] features = new double[instance.length - 1];
-            for (int i = 0; i < features.length; i++) {
-                features[i] = instance[i];
-            }
-            if (classifyInstance(individual.root, features) == actualClass) {
-                correct++;
-            }
-        }
-        individual.fitness = (double) correct / trainingData.length;
-    }
-
-    private void evaluateAll() {
+    
+    private void evaluatePopulation() {
         for (GPIndividual individual : population) {
-            evaluate(individual);
+            double[] predictions = getPredictions(individual.root, trainData);
+            double acc = Metrics.accuracy(predictions, trainData.getLabelArray());
+            double f1 = Metrics.fMeasure(predictions, trainData.getLabelArray());
+            individual.fitness = (acc + f1) / 2.0;
         }
     }
-
-    private GPIndividual getBest() {
-        GPIndividual best = population.get(0);
-        for (GPIndividual individual : population) {
-            if (individual.fitness > best.fitness) {
-                best = individual;
-            }
-        }
-        return best;
+    
+    private double getFitness(Node tree, Dataset data) {
+        double[] predictions = getPredictions(tree, data);
+        double acc = Metrics.accuracy(predictions, data.getLabelArray());
+        double f1 = Metrics.fMeasure(predictions, data.getLabelArray());
+        return (acc + f1) / 2.0;
     }
-
+    
+    private double[] getPredictions(Node tree, Dataset data) {
+        double[][] features = data.getFeatureMatrix();
+        double[] predictions = new double[features.length];
+        
+        for (int i = 0; i < features.length; i++) {
+            predictions[i] = classifyInstance(tree, features[i]);
+        }
+        return predictions;
+    }
+    
+    private double evaluateAccuracy(Node tree, Dataset data) {
+        double[] predictions = getPredictions(tree, data);
+        return Metrics.accuracy(predictions, data.getLabelArray());
+    }
+    
+    private double evaluateFMeasure(Node tree, Dataset data) {
+        double[] predictions = getPredictions(tree, data);
+        return Metrics.fMeasure(predictions, data.getLabelArray());
+    }
+    
     private GPIndividual tournamentSelect() {
         GPIndividual best = null;
-        for (int i = 0; i < params.tournamentSize; i++) {
-            GPIndividual candidate = population.get(random.nextInt(population.size()));
-            if (best == null || candidate.fitness > best.fitness) {
-                best = candidate;
+        for (int i = 0; i < tournamentSize; i++) {
+            int idx = random.nextInt(population.size());
+            GPIndividual contender = population.get(idx);
+            if (best == null || contender.fitness > best.fitness) {
+                best = contender;
             }
         }
-        return best;
+        return new GPIndividual(copyTree(best.root));
     }
-
+    
     private Node copyTree(Node node) {
         if (node == null) return null;
         if (node.isLeaf) {
@@ -160,12 +202,13 @@ public class DecisionTreeGP {
         copy.right = copyTree(node.right);
         return copy;
     }
-
-    private int treeSize(Node node) {
-        if (node == null || node.isLeaf) return 1;
-        return 1 + treeSize(node.left) + treeSize(node.right);
+    
+    private int getTreeNodeCount(Node node) {
+        if (node == null) return 0;
+        if (node.isLeaf) return 1;
+        return 1 + getTreeNodeCount(node.left) + getTreeNodeCount(node.right);
     }
-
+    
     private Node getNodeAt(Node node, int[] counter, int target) {
         if (node == null) return null;
         if (counter[0] == target) return node;
@@ -174,7 +217,7 @@ public class DecisionTreeGP {
         if (found != null) return found;
         return getNodeAt(node.right, counter, target);
     }
-
+    
     private Node replaceNodeAt(Node node, int[] counter, int target, Node replacement) {
         if (node == null) return null;
         if (counter[0] == target) {
@@ -186,92 +229,73 @@ public class DecisionTreeGP {
         node.right = replaceNodeAt(node.right, counter, target, replacement);
         return node;
     }
-
+    
     private GPIndividual crossover(GPIndividual parent1, GPIndividual parent2) {
-        Node child1Root = copyTree(parent1.root);
-        Node child2Root = copyTree(parent2.root);
-
-        int size1 = treeSize(child1Root);
-        int size2 = treeSize(child2Root);
-
+        Node childRoot = copyTree(parent1.root);
+        Node parent2Root = copyTree(parent2.root);
+        
+        int size1 = getTreeNodeCount(childRoot);
+        int size2 = getTreeNodeCount(parent2Root);
+        
+        if (size1 <= 1 || size2 <= 1) {
+            return new GPIndividual(copyTree(parent1.root));
+        }
+        
         int point1 = random.nextInt(size1);
         int point2 = random.nextInt(size2);
-
-        Node subtree2 = getNodeAt(child2Root, new int[]{0}, point2);
-        Node subtreeCopy = copyTree(subtree2);
-
-        child1Root = replaceNodeAt(child1Root, new int[]{0}, point1, subtreeCopy);
-
-        return new GPIndividual(child1Root);
+        
+        Node subtree = getNodeAt(parent2Root, new int[]{0}, point2);
+        Node subtreeCopy = copyTree(subtree);
+        
+        childRoot = replaceNodeAt(childRoot, new int[]{0}, point1, subtreeCopy);
+        
+        return new GPIndividual(childRoot);
     }
-
+    
     private void mutate(GPIndividual individual) {
-        int size = treeSize(individual.root);
+        if (random.nextDouble() >= mutationRate) return;
+        
+        int size = getTreeNodeCount(individual.root);
+        if (size <= 1) return;
+        
         int point = random.nextInt(size);
-        Node replacement = generateTree(0, params.mutationMaxDepth, "grow");
+        int newDepth = random.nextInt(maxTreeDepth) + 1;
+        Node replacement = generateTree(0, newDepth, "grow");
         individual.root = replaceNodeAt(individual.root, new int[]{0}, point, replacement);
     }
-
-    public GPIndividual run() {
-        initialisePopulation();
-        evaluateAll();
-
-        GPIndividual bestOverall = copyIndividual(getBest());
-
-        for (int gen = 0; gen < params.maxGenerations; gen++) {
-            List<GPIndividual> newPopulation = new ArrayList<>();
-
-            while (newPopulation.size() < params.populationSize) {
-                GPIndividual parent1 = tournamentSelect();
-                GPIndividual parent2 = tournamentSelect();
-                GPIndividual child;
-
-                if (random.nextDouble() < params.crossoverRate) {
-                    child = crossover(parent1, parent2);
-                } else {
-                    child = new GPIndividual(copyTree(parent1.root));
-                }
-
-                if (random.nextDouble() < params.mutationRate) {
-                    mutate(child);
-                }
-
-                newPopulation.add(child);
-            }
-
-            population = newPopulation;
-            evaluateAll();
-
-            GPIndividual generationBest = getBest();
-
-            if (generationBest.fitness > bestOverall.fitness) {
-                bestOverall = copyIndividual(generationBest);
-            }
-
-            System.out.printf("Generation %d | Best Fitness: %.4f%n", gen + 1, generationBest.fitness);
+    
+    private static class Node {
+        boolean isLeaf;
+        int classLabel;
+        int featureIndex;
+        double threshold;
+        Node left;
+        Node right;
+        
+        Node(int classLabel) {
+            this.isLeaf = true;
+            this.classLabel = classLabel;
         }
-
-        return bestOverall;
-    }
-
-    private GPIndividual copyIndividual(GPIndividual individual) {
-        return new GPIndividual(copyTree(individual.root));
-    }
-
-    public int classifyTest(double[] instance) {
-        double[] features = new double[instance.length - 1];
-        for (int i = 0; i < features.length; i++) {
-            features[i] = instance[i];
+        
+        Node(int featureIndex, double threshold) {
+            this.isLeaf = false;
+            this.featureIndex = featureIndex;
+            this.threshold = threshold;
         }
-        return classifyInstance(getBest().root, features);
     }
-
-    public int classifyWithTree(Node root, double[] instance) {
-        double[] features = new double[instance.length - 1];
-        for (int i = 0; i < features.length; i++) {
-            features[i] = instance[i];
+    
+    private static class GPIndividual implements Comparable<GPIndividual> {
+        Node root;
+        double fitness;
+        
+        GPIndividual(Node root) {
+            this.root = root;
+            this.fitness = 0.0;
         }
-        return classifyInstance(root, features);
+        
+        @Override
+        public int compareTo(GPIndividual other) {
+            return Double.compare(other.fitness, this.fitness);
+        }
     }
 }
-
