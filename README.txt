@@ -4,10 +4,9 @@
 ================================================================================
 
 GROUP MEMBERS
-  - Gift        : DecisionTreeGP.java
-  - Christopher : ArithmeticGP.java, GPParameters.java, GPIndividual.java,
-                  Dataset.java, Metrics.java, WilcoxonTest.java, Main.java
-  - Tiego : manifest.txt, README.txt, report.pdf, GPClassifier.jar
+  - Gift        
+  - Christopher 
+  - Tiego 
 
 --------------------------------------------------------------------------------
 OVERVIEW
